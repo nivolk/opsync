@@ -1,0 +1,22 @@
+# Привязка репозитория к OpenProject для opsync. Скопируйте в корень репозитория
+# как .openproject.yaml или создайте командой `opsync init`.
+
+# identifier проекта из URL OpenProject: /projects/<identifier>/
+project: my-project
+
+# YAML-план задач проекта (необязательно). Путь относительно этого файла, ~ раскрывается.
+# Нужен, чтобы ссылаться на задачи по key (`opsync start be-reset-token`) и вести состав
+# задач через `opsync apply`. Лежит в репозитории проекта; соседний .state/<name>.json
+# (key → id) коммитится вместе с ним.
+plan: .openproject/plan.yaml
+
+# Локальный трекер задач репозитория (необязательно). opsync его не читает — это подсказка
+# агенту, где искать соответствие задачам OpenProject.
+tracker: docs/TASKS.md
+
+# Этап жизненного цикла → имя статуса в вашем экземпляре (opsync inspect покажет список).
+statuses:
+  start: В процессе
+  review: В тестировании
+  done: закрыто
+  reopen: Новое

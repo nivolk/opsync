@@ -1,0 +1,37 @@
+# Пример плана. Формат — opsync/skill/references/plan.md.
+name: example
+
+defaults:
+  project: my-project
+  type: Задание
+  status: Новое
+  priority: Обычное
+  assignee: me
+
+sprints:
+  - {name: Спринт 1, start: 2026-10-12, finish: 2026-10-23}
+
+calendar:
+  schedule: true                  # даты считает opsync: opsync schedule
+
+items:
+  - key: login
+    type: Сводка задачи
+    subject: Вход по одноразовому коду
+    defaults: {sprint: Спринт 1}
+    children:
+      - key: login-api
+        subject: API выдачи и проверки кода
+        estimate: 12h
+      - key: login-ui
+        subject: Форма входа
+        estimate: 1d
+        follows: [login-api]
+      - key: login-docs
+        subject: Описать вход в руководстве
+        estimate: 4h
+      - key: login-ready
+        type: Веха
+        subject: Вход по коду готов
+        date: 2026-10-20
+        follows: [login-ui, login-docs]
