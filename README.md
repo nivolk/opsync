@@ -10,7 +10,7 @@ Claude Desktop.
 `curl -LsSf https://astral.sh/uv/install.sh | sh`
 
 ```bash
-uv tool install git+https://github.com/OWNER/opsync
+uv tool install git+https://github.com/nivolk/opsync
 opsync setup
 ```
 
