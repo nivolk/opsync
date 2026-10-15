@@ -16,7 +16,7 @@ from .catalog import instance_calendar
 from .client import API, ApiError, Client, href_id
 from .config import ProjectConfig, state_path
 from .plan import hours, iso_hours, iso_to_hours, load
-from .planedit import DELETE, edit_items
+from .planedit import DELETE, append_items, edit_items
 
 
 # Этапы, которые агент видит в начале сессии, — в этом порядке.
@@ -37,6 +37,16 @@ class Carry:
     moved: list[dict]                    # id, key, subject, status
     plan_keys: list[str]                 # элементы плана, где спринт заменён
     warnings: list[str]
+
+
+@dataclass
+class NewTask:
+    id: int | None                       # None — пробный прогон
+    subject: str
+    type: str
+    project: str
+    plan_item: dict | None               # что дописано (или будет дописано) в план
+    url: str | None
 
 
 @dataclass
@@ -377,6 +387,116 @@ class Tasks:
             edit_items(plan.path, changes)
         return sorted(changes), warnings
 
+    # ---------------------------------------------------------------- создание
+    def new(self, subject: str, description: str, type_name: str | None = None,
+            sprint: str | None = None, parent: str | None = None, estimate: str | None = None,
+            key: str | None = None, mine: bool = False, project: str | None = None,
+            dry_run: bool = False) -> NewTask:
+        """Завести задачу, найденную по ходу работы, — на сервере и в плане проекта.
+
+        В плане задача появляется сразу: иначе `pull` счёл бы её заведённой руками, а план
+        перестал бы быть полным описанием проекта. С `key` — полный элемент плана (план
+        владеет его полями), без него — `- id: N`, как после `pull --adopt`.
+        """
+        if not description.strip():
+            raise LookupError("нужно описание (-m): зачем задача и когда она готова — "
+                              "его читают люди без контекста сессии")
+        project = project or self.config.project
+        if not project:
+            raise LookupError("не указан проект: подключите репозиторий (opsync init) "
+                              "или передайте --project")
+        plan = load(self.config.plan) if self.config.plan and self.config.plan.is_file() else None
+        if key and not plan:
+            raise LookupError("--key — это key плана, а плана у проекта нет")
+        if key and plan and key in plan.nodes:
+            raise LookupError(f"key {key!r} в плане уже есть")
+        pid = self._project_id(project)
+        types = {t["name"].lower(): t for t in self.c.collection(f"/projects/{pid}/types")}
+        type_name = type_name or (plan_defaults(plan).get("type") if plan else None)
+        if type_name:
+            t = types.get(type_name.lower())
+            if not t:
+                raise LookupError(f"тип {type_name!r} не включён в проекте. Есть: "
+                                  + ", ".join(x["name"] for x in types.values()))
+        else:
+            t = next(iter(types.values()))         # первый тип проекта — обычно «Задача»
+        body: dict[str, Any] = {"subject": subject,
+                                "description": {"format": "markdown", "raw": description},
+                                "_links": {"type": {"href": t["_links"]["self"]["href"]}}}
+        if sprint:
+            sid = self.sprint(sprint, project)["id"]
+            body["_links"]["sprint"] = {"href": f"{API}/sprints/{sid}"}
+        parent_id = self.resolve(parent) if parent else None
+        if parent_id:
+            body["_links"]["parent"] = {"href": f"{API}/work_packages/{parent_id}"}
+        if estimate:
+            body["estimatedTime"] = iso_hours(hours(estimate))
+        if mine:
+            body["_links"]["assignee"] = {"href": self.c.get("/users/me")["_links"]["self"]["href"]}
+        result = NewTask(id=None, subject=subject, type=t["name"], project=project,
+                         plan_item=None, url=None)
+        if dry_run:
+            form = self.c.post(f"/projects/{pid}/work_packages/form", body)
+            errors = (form.get("_embedded") or {}).get("validationErrors") or {}
+            if errors:
+                raise LookupError("сервер не примет задачу: " + "; ".join(
+                    f"{k}: {v.get('message')}" for k, v in errors.items()))
+        else:
+            wp = self.c.post(f"/projects/{pid}/work_packages", body)
+            result.id, result.url = wp["id"], self.c.web_url(wp["id"])
+        if plan:
+            result.plan_item = self._plan_item(plan, result.id, key, subject, description,
+                                               t["name"], sprint, parent_id, estimate, project)
+            if not dry_run:
+                append_items(plan.path, [result.plan_item])
+                if key:
+                    self.keys()[key] = result.id
+                    path = state_path(plan.path, plan.name)
+                    path.parent.mkdir(exist_ok=True)
+                    path.write_text(json.dumps(self.keys(), ensure_ascii=False, indent=1))
+        return result
+
+    def _plan_item(self, plan, wid, key, subject, description, type_name, sprint, parent_id,
+                   estimate, project) -> dict[str, Any]:
+        parent_key = None
+        if parent_id:
+            parent_key = self.key_of(parent_id) or (
+                f"#{parent_id}" if f"#{parent_id}" in plan.nodes else None)
+        if not key:
+            item: dict[str, Any] = {"id": wid or "<номер>"}
+            if parent_key:
+                item["parent"] = parent_key
+            return item
+        defaults = plan_defaults(plan)
+        item = {"key": key, "subject": subject}
+        if project != defaults.get("project"):
+            item["project"] = project
+        if parent_key:
+            item["parent"] = parent_key
+        if type_name != defaults.get("type"):
+            item["type"] = type_name
+        if sprint:
+            item["sprint"] = sprint
+        if estimate:
+            item["estimate"] = estimate
+        item["description"] = description
+        return item
+
+    def update_description(self, wid: int, text: str, replace: bool = False) -> str:
+        """Дополнить (или заменить) описание. Если описанием владеет план — и в плане."""
+        wp = self.get(wid)
+        old = self.describe(wp)
+        new = text.strip() if replace or not old else f"{old}\n\n{text.strip()}"
+        self.c.patch(f"/work_packages/{wid}", {
+            "lockVersion": wp["lockVersion"],
+            "description": {"format": "markdown", "raw": new}})
+        key = self.key_of(wid)
+        if key and self.config.plan and self.config.plan.is_file():
+            node = load(self.config.plan).nodes.get(key)
+            if node and "description" in node.explicit:
+                edit_items(self.config.plan, {key: {"description": new}})
+        return new
+
     def _project_id(self, ref: str) -> int:
         try:
             return self.c.get(f"/projects/{ref}")["id"]
@@ -519,6 +639,12 @@ def comment_warnings(text: str) -> list[str]:
     if sum(ln.lstrip().startswith(("#", "- ", "* ", "|")) for ln in lines) > 6:
         out.append("много заголовков и пунктов: обычным текстом в пару предложений понятнее")
     return out
+
+
+def plan_defaults(plan) -> dict[str, Any]:
+    import yaml
+    raw = yaml.safe_load(plan.path.read_text(encoding="utf-8")) or {}
+    return raw.get("defaults") or {}
 
 
 def _ddmm(day: str) -> str:

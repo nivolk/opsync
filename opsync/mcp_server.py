@@ -176,6 +176,28 @@ def build() -> MCPServer:
         return "\n".join([f"#{wid}: комментарий добавлен", *tasks.warnings])
 
     @tool
+    def op_new(subject: str, description: str, type: str | None = None,
+               sprint: str | None = None, parent: str | None = None,
+               estimate: str | None = None, key: str | None = None, mine: bool = False,
+               dry_run: bool = True, project: str | None = None,
+               project_dir: str | None = None) -> dict:
+        """Завести задачу, найденную по ходу работы, и дописать её в план проекта (если он
+        есть). description — зачем задача и когда готова, для людей. По умолчанию пробный
+        прогон; dry_run=false — только после согласия пользователя."""
+        t = _tasks(project_dir, project).new(subject, description, type, sprint, parent,
+                                             estimate, key, mine, project, dry_run)
+        return t.__dict__
+
+    @tool
+    def op_describe(ref: str, text: str, replace: bool = False,
+                    project_dir: str | None = None) -> str:
+        """Дополнить описание задачи (replace=true — заменить целиком)."""
+        tasks = _tasks(project_dir)
+        wid = tasks.resolve(ref)
+        tasks.update_description(wid, text, replace)
+        return f"#{wid}: описание {'заменено' if replace else 'дополнено'}"
+
+    @tool
     def op_log_time(ref: str, time: str, comment: str | None = None, date: str | None = None,
                     activity: str | None = None, project_dir: str | None = None) -> dict:
         """Списать время: 2h, 0.5d, 30m; date — YYYY-MM-DD (по умолчанию сегодня)."""

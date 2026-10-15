@@ -10,6 +10,9 @@
     opsync start|review|done|reopen <ref>... [-m текст]   этап жизненного цикла
     opsync status <ref> <статус> [-m текст]   произвольный статус
     opsync comment <ref> <текст>              комментарий в ленту задачи
+    opsync new <тема> -m <описание> [--type T] [--sprint S] [--parent ref] [--estimate 4h]
+               [--key k] [--mine] [--dry-run]   завести задачу (и дописать в план)
+    opsync describe <ref> -m <текст> [--replace]   дополнить описание задачи
     opsync log <ref> <время> [-m текст] [--date D] [--activity A]   списать время (2h, 0.5d)
     (--no-notify у этих команд — комментарий без уведомлений)
 
@@ -125,6 +128,25 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("text")
     add_notify(p)
 
+    p = sub.add_parser("new", help="завести задачу, найденную по ходу работы")
+    p.add_argument("subject", help="тема: что сделать, понятно без контекста")
+    p.add_argument("-m", "--message", required=True,
+                   help="описание: зачем задача и когда она готова")
+    p.add_argument("--type", help="тип (по умолчанию — из плана или первый тип проекта)")
+    p.add_argument("--sprint")
+    p.add_argument("--parent", help="родительская задача: номер или key плана")
+    p.add_argument("--estimate", help="оценка: 4h, 0.5d")
+    p.add_argument("--key", help="key в плане проекта (без него в план пишется - id: N)")
+    p.add_argument("--mine", action="store_true", help="назначить на себя")
+    p.add_argument("--project")
+    p.add_argument("--dry-run", action="store_true", help="проверить на сервере, не создавая")
+    p.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("describe", help="дополнить описание задачи")
+    p.add_argument("ref")
+    p.add_argument("-m", "--message", required=True)
+    p.add_argument("--replace", action="store_true", help="заменить описание целиком")
+
     p = sub.add_parser("setup", help="первый запуск: доступ к OpenProject и подключение агентов")
     p.add_argument("--url", help="адрес OpenProject")
     p.add_argument("--token-stdin", action="store_true", help="токен — из stdin")
@@ -222,6 +244,13 @@ def main(argv: list[str] | None = None) -> int:
             wid = tasks.resolve(args.ref)
             tasks.comment(wid, args.text, args.notify)
             print(f"#{wid}: комментарий добавлен")
+            return 0
+        if args.cmd == "new":
+            return cmd_new(tasks, args)
+        if args.cmd == "describe":
+            wid = tasks.resolve(args.ref)
+            tasks.update_description(wid, args.message, args.replace)
+            print(f"#{wid}: описание {'заменено' if args.replace else 'дополнено'}")
             return 0
         if args.cmd == "inspect":
             return cmd_inspect(client, args.project or config.project)
@@ -451,6 +480,29 @@ def cmd_carry(tasks: Tasks, args: argparse.Namespace) -> int:
     if args.dry_run:
         print("\nПробный прогон — ничего не записано.")
     print(f"Сам спринт «{c.source}» закрывается в интерфейсе (Бэклоги), API этого не умеет.")
+    return 0
+
+
+def cmd_new(tasks: Tasks, args: argparse.Namespace) -> int:
+    t = tasks.new(args.subject, args.message, args.type, args.sprint, args.parent,
+                  args.estimate, args.key, args.mine, args.project, args.dry_run)
+    if args.json:
+        print(json.dumps(t.__dict__, ensure_ascii=False, indent=1))
+        return 0
+    if args.dry_run:
+        print(f"Будет создано ({t.type}, {t.project}): {t.subject}. Сервер форму принял.")
+    else:
+        print(f"Создано #{t.id} ({t.type}): {t.subject}\n  {t.url}")
+    if t.plan_item:
+        verb = "Будет дописано" if args.dry_run else "Дописано"
+        item = yaml.safe_dump([t.plan_item], allow_unicode=True, sort_keys=False,
+                              width=4096).rstrip()
+        print(f"\n{verb} в план {tasks.config.plan}:\n" + "\n".join(
+            "  " + line for line in item.splitlines()))
+        if not args.dry_run:
+            print("Закоммитьте план.")
+    if args.dry_run:
+        print("\nПробный прогон — ничего не записано.")
     return 0
 
 
