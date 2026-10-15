@@ -8,6 +8,8 @@
     opsync board [--sprint S] [--project P] [--json]   сводка спринта: колонки, часы, риски
     opsync carry <спринт> [--to S] [--dry-run] [-m текст]  незакрытые задачи → в следующий
     opsync start|review|done|reopen <ref>... [-m текст]   этап жизненного цикла
+    opsync block <ref>... -m <что мешает>     ждёт чего-то извне (этап blocked); unblock — снова в работу
+    opsync note <ref> -m <текст>              ход работы: комментарий без смены статуса и писем
     opsync status <ref> <статус> [-m текст]   произвольный статус
     opsync comment <ref> <текст>              комментарий в ленту задачи
     opsync new <тема> -m <описание> [--type T] [--sprint S] [--parent ref] [--estimate 4h]
@@ -46,9 +48,9 @@ from .apply import Applier, plan_schedule
 from .pull import pull
 from .catalog import Catalog
 from .client import ApiError, Client, href_id
-from . import __version__, setup
-from .config import (CONFIG_NAMES, DEFAULT_STATUSES, ProjectConfig, detect_statuses,
-                     find_project_config, load_credentials)
+from . import __version__, gitinfo, setup
+from .config import (CONFIG_NAMES, DEFAULT_STATUSES, OPTIONAL_STAGES, ProjectConfig,
+                     detect_statuses, find_project_config, load_credentials)
 from .plan import PlanError, hours, load
 from .tasks import StatusChange, Tasks
 
@@ -108,6 +110,23 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--spent", help="заодно списать время на каждую задачу: 2h, 0.5d")
         add_notify(p)
         p.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("block", help="задача ждёт чего-то извне: статус этапа blocked")
+    p.add_argument("refs", nargs="+")
+    p.add_argument("-m", "--message", required=True, help="что мешает и от кого ждём")
+    add_notify(p)
+    p.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("unblock", help="блокер снят — снова в работе (этап start)")
+    p.add_argument("refs", nargs="+")
+    p.add_argument("-m", "--message", help="что изменилось")
+    add_notify(p)
+    p.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("note", help="ход работы: комментарий без смены статуса и без писем")
+    p.add_argument("ref")
+    p.add_argument("-m", "--message", required=True, help="что сделано, что дальше")
+    p.add_argument("--notify", action="store_true", help="разослать уведомления участникам")
 
     p = sub.add_parser("status", help="перевести в произвольный статус")
     p.add_argument("ref")
@@ -226,11 +245,24 @@ def main(argv: list[str] | None = None) -> int:
             changes = []
             for ref in args.refs:
                 wid = tasks.resolve(ref)
-                changes.append(tasks.stage(wid, args.cmd, args.message, args.notify))
+                message = args.message
+                if args.cmd == "review":
+                    message = gitinfo.with_commit(message, wid)
+                changes.append(tasks.stage(wid, args.cmd, message, args.notify))
                 if args.spent:
                     tasks.log_time(wid, args.spent)
                     changes[-1].spent = args.spent
             return print_changes(changes, args.json)
+        if args.cmd in ("block", "unblock"):
+            stage = "blocked" if args.cmd == "block" else "start"
+            tasks.config.status_for(stage)          # не настроен — до любой записи
+            return print_changes([tasks.stage(tasks.resolve(ref), stage, args.message,
+                                              args.notify) for ref in args.refs], args.json)
+        if args.cmd == "note":
+            wid = tasks.resolve(args.ref)
+            tasks.comment(wid, args.message, args.notify)
+            print(f"#{wid}: заметка о ходе работы добавлена")
+            return 0
         if args.cmd == "status":
             change = tasks.set_status(tasks.resolve(args.ref), args.status, args.message,
                                       args.notify)
@@ -581,6 +613,8 @@ def choose_statuses(client: Client) -> dict[str, str]:
         if status:
             out[stage] = status
             continue
+        if stage in OPTIONAL_STAGES:
+            continue                                # нет подходящего — этап просто не нужен
         if not sys.stdin.isatty():
             out[stage] = DEFAULT_STATUSES[stage]
             print(f"Этап {stage}: подходящий статус не найден — поправьте statuses в "
@@ -599,7 +633,8 @@ def choose_statuses(client: Client) -> dict[str, str]:
 
 
 STAGE_TITLES = {"start": "взял в работу", "review": "готово, на проверке",
-                "done": "принято, закрыто", "reopen": "вернуть в работу"}
+                "done": "принято, закрыто", "reopen": "вернуть в работу",
+                "blocked": "ждёт чего-то извне"}
 
 
 def cmd_doctor(client: Client, config: ProjectConfig) -> int:
@@ -629,12 +664,17 @@ def cmd_doctor(client: Client, config: ProjectConfig) -> int:
         print(f"План:        {config.plan}{hint}")
     if config.tracker:
         print(f"Трекер:      {config.tracker}")
-    names = {s["name"].lower() for s in client.collection("/statuses")}
+    all_names = [s["name"] for s in client.collection("/statuses")]
+    names = {n.lower() for n in all_names}
     print("Этапы:")
     for stage, status in config.statuses.items():
         found = status.lower() in names
         ok &= found
         print(f"  {stage:8} → {status}" + ("" if found else "  — НЕТ ТАКОГО СТАТУСА"))
+    for stage in sorted(OPTIONAL_STAGES - set(config.statuses)):
+        guess = detect_statuses(all_names).get(stage)
+        hint = f"добавьте в statuses: «{stage}: {guess}»" if guess else "не настроен"
+        print(f"  {stage:8} — {hint} (opsync {'block' if stage == 'blocked' else stage})")
     print("\nВсё в порядке." if ok else "\nЕсть проблемы — см. выше.")
     return 0 if ok else 1
 

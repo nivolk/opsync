@@ -35,7 +35,12 @@ STAGE_SYNONYMS = {
                "testing", "review", "разработан", "developed"),
     "done": ("закрыто", "закрыта", "закрыт", "closed", "done", "выполнено", "resolved"),
     "reopen": ("новое", "новая", "новый", "new", "open", "открыто"),
+    "blocked": ("в ожидании", "ожидание", "заблокировано", "заблокирована", "приостановлено",
+                "on hold", "blocked", "waiting"),
 }
+# Необязательные этапы: в экземпляре может не быть подходящего статуса — тогда этап не
+# настраивается, а команда объясняет, как его добавить.
+OPTIONAL_STAGES = {"blocked"}
 
 
 def detect_statuses(names: list[str]) -> dict[str, str | None]:
@@ -99,7 +104,10 @@ class ProjectConfig:
         try:
             return self.statuses[stage]
         except KeyError:
-            raise LookupError(f"этап {stage!r} не описан в statuses") from None
+            where = self.path or ".openproject.yaml"
+            raise LookupError(f"этап {stage!r} не настроен: добавьте в {where} раздел "
+                              f"statuses строку «{stage}: <имя статуса>» (список статусов: "
+                              "opsync inspect)") from None
 
 
 def find_project_config(start: Path | None = None) -> ProjectConfig:

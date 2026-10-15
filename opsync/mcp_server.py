@@ -25,11 +25,12 @@ from .client import ApiError, Client
 from .config import ProjectConfig, find_project_config
 from .plan import PlanError, hours, load
 from .pull import pull
+from .gitinfo import with_commit
 from .setup import skill_source
 from .tasks import Tasks
 
 SECTIONS = ("Жизненный цикл задачи", "Комментарии", "Что требует подтверждения пользователя")
-STAGES = ("start", "review", "done", "reopen")
+STAGES = ("start", "review", "done", "reopen", "blocked")
 
 
 def instructions() -> str:
@@ -144,14 +145,18 @@ def build() -> MCPServer:
     @tool
     def op_stage(ref: str, stage: str, comment: str | None = None, spent: str | None = None,
                  notify: bool = True, project_dir: str | None = None) -> dict:
-        """Этап задачи: start | review | done | reopen. comment — в ленту задачи одной записью
-        со сменой статуса; spent — заодно списать время (2h, 30m). Повтор безопасен."""
+        """Этап задачи: start | review | done | reopen | blocked (ждёт чего-то извне — в
+        comment что мешает). comment — в ленту одной записью со сменой статуса; spent — заодно
+        списать время (2h, 30m). Повтор безопасен. review сам добавит коммит, если последний
+        коммит помечен OP#<номер>."""
         if stage not in STAGES:
             raise LookupError(f"этап {stage!r}: допустимы {', '.join(STAGES)}")
         tasks = _tasks(project_dir)
         wid = tasks.resolve(ref)
         if spent:
             hours(spent)                               # формат — до любой записи
+        if stage == "review":
+            comment = with_commit(comment, wid, _config(project_dir, None).root)
         change = tasks.stage(wid, stage, comment, notify)
         if spent:
             tasks.log_time(wid, spent)
@@ -196,6 +201,16 @@ def build() -> MCPServer:
         wid = tasks.resolve(ref)
         tasks.update_description(wid, text, replace)
         return f"#{wid}: описание {'заменено' if replace else 'дополнено'}"
+
+    @tool
+    def op_note(ref: str, text: str, notify: bool = False,
+                project_dir: str | None = None) -> str:
+        """Ход работы: короткий комментарий без смены статуса («сделано …, дальше …»).
+        По умолчанию без писем участникам."""
+        tasks = _tasks(project_dir)
+        wid = tasks.resolve(ref)
+        tasks.comment(wid, text, notify)
+        return "\n".join([f"#{wid}: заметка добавлена", *tasks.warnings])
 
     @tool
     def op_log_time(ref: str, time: str, comment: str | None = None, date: str | None = None,
