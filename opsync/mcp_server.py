@@ -221,6 +221,23 @@ def build() -> MCPServer:
         return tasks.log_time(tasks.resolve(ref), time, comment, day, activity)
 
     @tool
+    def op_report(summary: str | None = None, days: int = 7, health: str | None = None,
+                  publish: bool = False, news: bool = False, project: str | None = None,
+                  project_dir: str | None = None) -> dict:
+        """Состояние проекта для команды: сделано за days дней, на проверке, в работе, ждёт,
+        риски, дальше по спринту. summary — «Главное» в 2–3 предложениях своими словами.
+        publish=true пишет статус (on_track | at_risk | off_track) и пояснение на обзор
+        проекта, news=true — ещё и новостью; публиковать — только после согласия
+        пользователя."""
+        from . import report
+        tasks = _tasks(project_dir, project)
+        r = report.build(tasks, days, summary, health)
+        out = {"health": r.health, "markdown": report.markdown(r), "published": False}
+        if publish:
+            out.update(report.publish(tasks, r, news), published=True)
+        return out
+
+    @tool
     def op_carry(sprint: str, to: str | None = None, comment: str | None = None,
                  dry_run: bool = True, project: str | None = None,
                  project_dir: str | None = None) -> dict:

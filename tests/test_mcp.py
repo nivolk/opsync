@@ -41,7 +41,7 @@ def test_tools_listed(server):
             return [t.name for t in (await c.list_tools()).tools]
     assert set(asyncio.run(go())) >= {"op_board", "op_show", "op_stage", "op_comment",
                                       "op_log_time", "op_apply", "op_pull", "op_projects",
-                                      "op_context", "op_search", "op_new", "op_describe", "op_note"}
+                                      "op_context", "op_search", "op_new", "op_describe", "op_note", "op_report"}
 
 
 def test_stage_changes_status_with_comment(server, fake):

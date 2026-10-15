@@ -66,8 +66,8 @@ class FakeClient:
         if "status" in links:            # сервер отвечает ссылкой с title — как при GET
             href = links["status"]["href"]
             links["status"]["title"] = next(
-                s["name"] for s in self.collections["/statuses"]
-                if s["_links"]["self"]["href"] == href)
+                (s["name"] for s in self.collections["/statuses"]
+                 if s["_links"]["self"]["href"] == href), None)
         current["_links"] = {**current.get("_links", {}), **links}
         current["lockVersion"] = current.get("lockVersion", 0) + 1
         self.objects[path] = current

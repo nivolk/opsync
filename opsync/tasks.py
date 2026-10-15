@@ -231,7 +231,7 @@ class Tasks:
             filters.append({"sprint": {"operator": "=", "values": [str(sid)]}})
             path = "/work_packages"
         elif project:
-            path = f"/projects/{self._project_id(project)}/work_packages"
+            path = f"/projects/{self.project_id(project)}/work_packages"
         else:
             path = "/work_packages"
         rows = []
@@ -248,7 +248,7 @@ class Tasks:
         if not project:
             raise LookupError("не указан проект: подключите репозиторий (opsync init) "
                               "или передайте --project")
-        items = self.c.collection(f"/projects/{self._project_id(project)}/sprints")
+        items = self.c.collection(f"/projects/{self.project_id(project)}/sprints")
         return sorted(items, key=lambda s: (s.get("startDate") or "", s["name"]))
 
     def sprint(self, name: str | None, project: str | None = None,
@@ -410,7 +410,7 @@ class Tasks:
             raise LookupError("--key — это key плана, а плана у проекта нет")
         if key and plan and key in plan.nodes:
             raise LookupError(f"key {key!r} в плане уже есть")
-        pid = self._project_id(project)
+        pid = self.project_id(project)
         types = {t["name"].lower(): t for t in self.c.collection(f"/projects/{pid}/types")}
         type_name = type_name or (plan_defaults(plan).get("type") if plan else None)
         if type_name:
@@ -497,7 +497,7 @@ class Tasks:
                 edit_items(self.config.plan, {key: {"description": new}})
         return new
 
-    def _project_id(self, ref: str) -> int:
+    def project_id(self, ref: str) -> int:
         try:
             return self.c.get(f"/projects/{ref}")["id"]
         except ApiError as e:

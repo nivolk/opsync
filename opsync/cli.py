@@ -12,6 +12,7 @@
     opsync note <ref> -m <текст>              ход работы: комментарий без смены статуса и писем
     opsync status <ref> <статус> [-m текст]   произвольный статус
     opsync comment <ref> <текст>              комментарий в ленту задачи
+    opsync report [--summary текст] [--publish] [--news]   состояние проекта для команды
     opsync new <тема> -m <описание> [--type T] [--sprint S] [--parent ref] [--estimate 4h]
                [--key k] [--mine] [--dry-run]   завести задачу (и дописать в план)
     opsync describe <ref> -m <текст> [--replace]   дополнить описание задачи
@@ -168,6 +169,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("-m", "--message", required=True)
     p.add_argument("--replace", action="store_true", help="заменить описание целиком")
 
+    p = sub.add_parser("report", help="состояние проекта для команды: сделано, в работе, "
+                                      "ждёт, риски, дальше")
+    p.add_argument("--days", type=int, default=7, help="«сделано» за сколько дней (7)")
+    p.add_argument("--summary", help="«Главное» — 2–3 предложения своими словами")
+    p.add_argument("--health", choices=("on_track", "at_risk", "off_track"),
+                   help="статус проекта (по умолчанию — по рискам)")
+    p.add_argument("--publish", action="store_true",
+                   help="записать статус и пояснение на обзор проекта")
+    p.add_argument("--news", action="store_true", help="и опубликовать новостью (итог спринта)")
+    p.add_argument("--json", action="store_true")
+
     p = sub.add_parser("setup", help="первый запуск: доступ к OpenProject и подключение агентов")
     p.add_argument("--url", help="адрес OpenProject")
     p.add_argument("--token-stdin", action="store_true", help="токен — из stdin")
@@ -299,6 +311,8 @@ def main(argv: list[str] | None = None) -> int:
             tasks.update_description(wid, args.message, args.replace)
             print(f"#{wid}: описание {'заменено' if args.replace else 'дополнено'}")
             return 0
+        if args.cmd == "report":
+            return cmd_report(tasks, args)
         if args.cmd == "inspect":
             return cmd_inspect(client, args.project or config.project)
         if args.cmd == "export":
@@ -528,6 +542,33 @@ def cmd_carry(tasks: Tasks, args: argparse.Namespace) -> int:
         print("\nПробный прогон — ничего не записано.")
     print(f"Сам спринт «{c.source}» закрывается в интерфейсе (Бэклоги), API этого не умеет.")
     return 0
+
+
+def cmd_report(tasks: Tasks, args: argparse.Namespace) -> int:
+    from . import report
+    r = report.build(tasks, args.days, args.summary, args.health)
+    if args.json:
+        print(json.dumps({**r.__dict__, "today": r.today.isoformat(),
+                          "markdown": report.markdown(r)}, ensure_ascii=False, indent=1))
+        if not args.publish:
+            return 0
+    else:
+        print(f"Статус проекта: {HEALTH_TITLES[r.health]}\n")
+        print(report.markdown(r))
+    if not args.publish:
+        if args.news:
+            print("--news публикуется вместе с --publish.")
+        print("Пробный прогон — ничего не записано. Опубликовать: opsync report --publish"
+              + (" --summary …" if not r.summary else ""))
+        return 0
+    result = report.publish(tasks, r, args.news)
+    if not args.json:
+        print(f"Опубликовано на обзоре проекта: {tasks.c.base}/projects/{r.identifier}"
+              + (f"; новость #{result['news']}" if result["news"] else ""))
+    return 0
+
+
+HEALTH_TITLES = {"on_track": "по плану", "at_risk": "под угрозой", "off_track": "отстаёт"}
 
 
 def cmd_new(tasks: Tasks, args: argparse.Namespace) -> int:
