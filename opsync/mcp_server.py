@@ -137,14 +137,15 @@ def build() -> MCPServer:
         if spent:
             tasks.log_time(wid, spent)
             change.spent = spent
-        return change.__dict__
+        return {**change.__dict__, "warnings": tasks.warnings}
 
     @tool
     def op_status(ref: str, status: str, comment: str | None = None,
                   project_dir: str | None = None) -> dict:
         """Произвольный статус задачи (имя статуса OpenProject)."""
         tasks = _tasks(project_dir)
-        return tasks.set_status(tasks.resolve(ref), status, comment).__dict__
+        change = tasks.set_status(tasks.resolve(ref), status, comment)
+        return {**change.__dict__, "warnings": tasks.warnings}
 
     @tool
     def op_comment(ref: str, text: str, notify: bool = True,
@@ -153,7 +154,7 @@ def build() -> MCPServer:
         tasks = _tasks(project_dir)
         wid = tasks.resolve(ref)
         tasks.comment(wid, text, notify)
-        return f"#{wid}: комментарий добавлен"
+        return "\n".join([f"#{wid}: комментарий добавлен", *tasks.warnings])
 
     @tool
     def op_log_time(ref: str, time: str, comment: str | None = None, date: str | None = None,

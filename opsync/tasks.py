@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -44,6 +45,7 @@ class Tasks:
         self.config = config
         self._statuses: dict[str, dict] | None = None
         self._keys: dict[str, int] | None = None
+        self.warnings: list[str] = []          # замечания к записанным комментариям
 
     # ---------------------------------------------------------------- ссылки
     def keys(self) -> dict[str, int]:
@@ -377,8 +379,46 @@ class Tasks:
                           + ", ".join(a["name"] for a in allowed))
 
     def comment(self, wid: int, text: str, notify: bool = True) -> None:
+        """Похожее на секрет не пишем вовсе; замечания по стилю копятся в `self.warnings`."""
+        secret = SECRET.search(text)
+        if secret:
+            raise LookupError(f"#{wid}: в комментарии похоже на секрет ({secret.group(0)[:12]}…) "
+                              "— уберите его, комментарий не записан")
+        self.warnings += [f"#{wid}: {w}" for w in comment_warnings(text)]
         self.c.post(f"/work_packages/{wid}/activities", {"comment": {"raw": text}},
                     params=None if notify else {"notify": "false"})
+
+
+# Комментарий читают люди без контекста сессии. Проверка грубая, на явные признаки отчёта
+# «для машины»; запись не останавливает — следующий комментарий агент напишет проще.
+SECRET = re.compile(
+    r"-----BEGIN [A-Z ]*PRIVATE KEY|"
+    r"(?i:\b(?:token|password|passwd|secret|api[_-]?key|пароль|токен)\b\s*[:=]\s*\S{6,})|"
+    r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_\-]{20,}|sk-[A-Za-z0-9_\-]{20,}|"
+    r"xox[bpas]-[A-Za-z0-9\-]{10,}|AKIA[0-9A-Z]{16})")
+FILE = re.compile(r"[\w.\-]*[/\\][\w./\\\-]*\.\w{1,5}\b|\b[\w\-]+\.(?:py|ts|tsx|js|jsx|cs|go|"
+                  r"java|kt|rb|php|vue|sql|rs|swift|scss|css)\b")
+TOOL = re.compile(r"\b(?:Claude|ChatGPT|GPT-?\d|Codex|Copilot|Cursor|LLM|AI)\b|\bИИ\b|"
+                  r"нейросет", re.I)
+COMMENT_LIMIT = 800
+
+
+def comment_warnings(text: str) -> list[str]:
+    """Чем комментарий непохож на сообщение коллеге; пусто — всё хорошо."""
+    out = []
+    if len(text) > COMMENT_LIMIT:
+        out.append(f"длинный комментарий ({len(text)} знаков): хватает 1–4 предложений — что "
+                   "сделано, что осталось, как проверить")
+    files = set(FILE.findall(text))
+    if len(files) > 3:
+        out.append(f"перечислено {len(files)} файлов: напишите, что изменилось по смыслу, "
+                   "файлы видны в коммите")
+    if TOOL.search(text):
+        out.append("упомянут инструмент, которым сделана работа: пишите от себя, по существу")
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if sum(ln.lstrip().startswith(("#", "- ", "* ", "|")) for ln in lines) > 6:
+        out.append("много заголовков и пунктов: обычным текстом в пару предложений понятнее")
+    return out
 
 
 def _hours(value: str | None, default: float | None = 0.0) -> float | None:

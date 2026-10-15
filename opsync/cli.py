@@ -150,6 +150,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--json", action="store_true")
 
     args = ap.parse_args(argv)
+    tasks: Tasks | None = None
     try:
         if args.cmd == "mcp":
             from .mcp_server import main as serve       # тянет mcp — только по запросу
@@ -229,6 +230,9 @@ def main(argv: list[str] | None = None) -> int:
     except (PlanError, LookupError) as e:
         print(f"Ошибка: {e}", file=sys.stderr)
         return 1
+    finally:
+        for w in tasks.warnings if tasks else ():
+            print(f"Замечание к комментарию {w}", file=sys.stderr)
 
 
 def add_notify(p: argparse.ArgumentParser) -> None:
