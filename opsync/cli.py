@@ -26,7 +26,9 @@
 
 Справка и настройка:
     opsync setup                              доступ и подключение агентов
-    opsync init [--project ID] [--plan путь] [--tracker путь]
+    opsync hooks [on|off]                     хуки Claude Code: сводка при старте, подсказка после коммита
+    opsync init [--project ID] [--plan путь] [--tracker путь] [--no-rules]
+    opsync rules [--remove]                   правило ведения задач в AGENTS.md / CLAUDE.md
     opsync doctor                             откуда взяты настройки, доступ, статусы
     opsync inspect [проект]
 
@@ -48,7 +50,7 @@ from .apply import Applier, plan_schedule
 from .pull import pull
 from .catalog import Catalog
 from .client import ApiError, Client, href_id
-from . import __version__, gitinfo, setup
+from . import __version__, gitinfo, rules, setup
 from .config import (CONFIG_NAMES, DEFAULT_STATUSES, OPTIONAL_STAGES, ProjectConfig,
                      detect_statuses, find_project_config, load_credentials)
 from .plan import PlanError, hours, load
@@ -171,6 +173,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--token-stdin", action="store_true", help="токен — из stdin")
     p.add_argument("--yes", action="store_true", help="не спрашивать, подключить всё найденное")
 
+    p = sub.add_parser("hooks", help="хуки Claude Code: сводка задач при старте, подсказка "
+                                     "после коммита")
+    p.add_argument("action", nargs="?", choices=("on", "off", "status"), default="status")
+
     sub.add_parser("mcp", help="MCP-сервер (stdio) для агентов без терминала")
     sub.add_parser("upgrade", help="обновить opsync и скиллы у агентов")
 
@@ -179,6 +185,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--plan", help=f"YAML-план проекта (если есть {DEFAULT_PLAN} — он)")
     p.add_argument("--tracker", help="локальный трекер задач, например docs/TASKS.md")
     p.add_argument("--force", action="store_true", help="перезаписать существующий")
+    p.add_argument("--no-rules", dest="rules", action="store_false",
+                   help="не дописывать правило ведения задач в AGENTS.md / CLAUDE.md")
+
+    p = sub.add_parser("rules", help="правило ведения задач в AGENTS.md / CLAUDE.md репозитория")
+    p.add_argument("--remove", action="store_true", help="убрать блок")
 
     sub.add_parser("doctor", help="проверить настройки и доступ")
 
@@ -217,8 +228,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "setup":
             token = sys.stdin.readline().strip() if args.token_stdin else None
             return setup.run(args.url, token, args.yes)
+        if args.cmd == "hooks":
+            return cmd_hooks(args.action)
         if args.cmd == "init":
             return cmd_init(args, Client.from_env())
+        if args.cmd == "rules":
+            return cmd_rules(find_project_config(), args.remove)
         if args.cmd == "context" and args.hook:
             return cmd_context_hook()
         config = find_project_config()
@@ -575,6 +590,39 @@ def cmd_init(args: argparse.Namespace, client: Client) -> int:
     path.write_text(header + yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
                     encoding="utf-8")
     print(f"Готово: {path.name}. Закоммитьте его — коллегам init не понадобится.")
+    if args.rules:
+        cmd_rules(find_project_config(), ask=sys.stdin.isatty())
+    return 0
+
+
+def cmd_rules(config: ProjectConfig, remove: bool = False, ask: bool = False) -> int:
+    if not config.path:
+        raise LookupError("репозиторий не подключён: opsync init")
+    if remove:
+        done = [p.name for p in rules.targets(config.root) if rules.remove(p)]
+        print(f"Блок opsync убран из: {', '.join(done)}." if done else "Блока opsync нет.")
+        return 0
+    paths = rules.targets(config.root)
+    names = ", ".join(p.name for p in paths)
+    if ask and not setup.ask(f"Дописать в {names} правило ведения задач для агентов?"):
+        print("Пропущено (позже: opsync rules).")
+        return 0
+    for p in paths:
+        print(f"{p.name}: блок opsync {rules.write(p, config.tracker)}.")
+    print("Закоммитьте — правило увидят агенты всех, кто работает с репозиторием.")
+    return 0
+
+
+def cmd_hooks(action: str) -> int:
+    home = Path.home()
+    if action != "status":
+        setup.set_hooks(home, action == "on")
+    state = setup.hooks_state(home)
+    print(f"Хуки Claude Code: {state} ({setup.claude_settings(home)})")
+    if state == "нет" and action == "status":
+        print("Включить: opsync hooks on")
+    elif action != "status":
+        print("Действует с новой сессии Claude Code.")
     return 0
 
 
@@ -649,7 +697,10 @@ def cmd_doctor(client: Client, config: ProjectConfig) -> int:
         return 1
     for title, state in setup.agents_state():
         mark = {"нет": "не подключён — opsync setup", "устарел": "устарел — opsync setup"}
-        print(f"Агент:       {title}: {mark.get(state, state)}")
+        state = mark.get(state, state)
+        for hooks in ("хуки: нет", "хуки: устарели"):
+            state = state.replace(hooks, f"{hooks} — opsync hooks on")
+        print(f"Агент:       {title}: {state}")
     print(f"Конфиг:      {config.path or 'нет .openproject.yaml — подключить: opsync init'}")
     if config.project:
         try:

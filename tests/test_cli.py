@@ -62,7 +62,7 @@ def test_init_without_project_in_pipe_lists_projects(isolated_env, capsys):
 
 def test_init_choose_project_interactively(isolated_env, monkeypatch):
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    answers = iter(["9", "2"])
+    answers = iter(["9", "2", "н"])   # проект, затем отказ от блока правил
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
     assert main(["init"]) == 0
     assert read_config()["project"] == "other"

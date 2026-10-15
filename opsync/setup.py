@@ -114,8 +114,10 @@ def agents_state(home: Path | None = None) -> list[tuple[str, str]]:
     for agent in AGENTS:
         if not agent.present(home):
             continue
-        if agent.key == "claude" and claude_plugin_installed(home):
-            out.append((agent.title, "плагин"))
+        if agent.key == "claude":
+            hooks = f", хуки: {hooks_state(home)}"
+            out.append((agent.title, ("плагин" if claude_plugin_installed(home)
+                                      else skill_state(agent.target(home))) + hooks))
         elif agent.kind == "skill":
             out.append((agent.title, skill_state(agent.target(home))))
         else:
@@ -157,6 +159,76 @@ def install_mcp(config: Path) -> None:
     data.setdefault("mcpServers", {})["openproject"] = mcp_entry()
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+# ------------------------------------------------------------ хуки Claude Code
+# Событие → (matcher, аргументы `python -m opsync.hooks`). Свои записи узнаём по модулю.
+HOOKS = {"SessionStart": (None, "session"), "PostToolUse": ("Bash", "commit")}
+HOOK_MODULE = "-m opsync.hooks"
+
+
+def claude_settings(home: Path) -> Path:
+    return home / ".claude" / "settings.json"
+
+
+def hook_command(event: str) -> str:
+    # Тот же Python, что у установленного opsync: не зависит от PATH агента.
+    return f'"{sys.executable}" {HOOK_MODULE} {HOOKS[event][1]}'
+
+
+def _ours(entry: dict) -> bool:
+    return any(HOOK_MODULE in (h.get("command") or "") for h in entry.get("hooks") or [])
+
+
+def _read_settings(path: Path) -> dict:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    try:
+        return json.loads(text) if text.strip() else {}
+    except ValueError:
+        raise LookupError(f"{path} — не JSON: поправьте файл, хуки не тронуты") from None
+
+
+def hooks_state(home: Path) -> str:
+    """нет | актуальны | устарели."""
+    try:
+        hooks = _read_settings(claude_settings(home)).get("hooks") or {}
+    except LookupError:
+        return "нет"
+    found = {event: [h["command"] for e in hooks.get(event) or [] if _ours(e)
+                     for h in e["hooks"]] for event in HOOKS}
+    if not any(found.values()):
+        return "нет"
+    fresh = all(found[event] == [hook_command(event)] for event in HOOKS)
+    return "актуальны" if fresh else "устарели"
+
+
+def set_hooks(home: Path, enabled: bool) -> None:
+    """Поставить (заново) или убрать свои хуки; чужие записи не трогаем."""
+    path = claude_settings(home)
+    data = _read_settings(path)
+    if path.is_file():
+        path.with_suffix(".json.bak").write_text(path.read_text(encoding="utf-8"),
+                                                 encoding="utf-8")
+    hooks = data.setdefault("hooks", {})
+    for event, (matcher, _) in HOOKS.items():
+        entries = [e for e in hooks.get(event) or [] if not _ours(e)]
+        if enabled:
+            entry: dict = {"hooks": [{"type": "command", "command": hook_command(event),
+                                      "timeout": 15}]}
+            if matcher:
+                entry = {"matcher": matcher, **entry}
+            entries.append(entry)
+        if entries:
+            hooks[event] = entries
+        else:
+            hooks.pop(event, None)
+    if not hooks:
+        data.pop("hooks")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 # ------------------------------------------------------------------ мастер
@@ -214,6 +286,17 @@ def run(url: str | None = None, token: str | None = None, yes: bool = False,
         (install_skill if agent.kind == "skill" else install_mcp)(target)
         note = " Перезапустите Claude Desktop." if agent.kind == "mcp" else ""
         print(f"   {agent.title}: готово.{note}")
+    if any(a.key == "claude" for a in found):
+        state = hooks_state(home)
+        if state == "актуальны":
+            print("   Хуки Claude Code: уже стоят.")
+        elif interactive and not ask("   Хуки Claude Code: сводка задач в начале сессии и "
+                                     "подсказка после коммита. Поставить?"):
+            print("   Хуки пропущены (включить позже: opsync hooks on).")
+        else:
+            set_hooks(home, True)
+            print(f"   Хуки Claude Code: {'обновлены' if state == 'устарели' else 'готово'} "
+                  f"({claude_settings(home)}; убрать: opsync hooks off).")
 
     print("\nДальше: в каталоге проекта — opsync init, затем скажите агенту, например,\n"
           "«Что по спринту?» или «Возьми задачу 123 в работу».")
