@@ -29,8 +29,9 @@ def _error_details(body: Any) -> str:
 
 
 class Client:
-    def __init__(self, base_url: str, token: str):
+    def __init__(self, base_url: str, token: str, timeout: float = 60):
         self.base = base_url.rstrip("/")
+        self.timeout = timeout
         self.session = requests.Session()
         self.session.auth = ("apikey", token)
         self.session.headers["Content-Type"] = "application/json"
@@ -54,7 +55,7 @@ class Client:
     def request(self, method: str, path: str, body: Any = None, params: dict | None = None) -> Any:
         resp = self.session.request(
             method, self._url(path), params=params,
-            data=json.dumps(body) if body is not None else None, timeout=60,
+            data=json.dumps(body) if body is not None else None, timeout=self.timeout,
         )
         if resp.status_code == 204 or not resp.content:
             if resp.ok:

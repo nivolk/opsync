@@ -13,10 +13,21 @@ from dataclasses import dataclass
 from typing import Any
 
 from .catalog import instance_calendar
-from .client import ApiError, Client
+from .client import API, ApiError, Client, href_id
 from .config import ProjectConfig, state_path
 from .plan import hours, iso_hours, iso_to_hours, load
 from .planedit import DELETE, edit_items
+
+
+# Этапы, которые агент видит в начале сессии, — в этом порядке.
+CONTEXT_STAGES = ("start", "blocked", "review")
+
+RELATIONS = {
+    "follows": "следует за", "precedes": "предшествует", "blocks": "блокирует",
+    "blocked": "заблокирована", "relates": "связана с", "duplicates": "дублирует",
+    "duplicated": "дублируется", "includes": "включает", "partof": "входит в",
+    "requires": "требует", "required": "нужна для",
+}
 
 
 @dataclass
@@ -46,6 +57,7 @@ class Tasks:
         self._statuses: dict[str, dict] | None = None
         self._keys: dict[str, int] | None = None
         self.warnings: list[str] = []          # замечания к записанным комментариям
+        self._users: dict[str, str | None] = {}
 
     # ---------------------------------------------------------------- ссылки
     def keys(self) -> dict[str, int]:
@@ -104,11 +116,99 @@ class Tasks:
     def describe(self, wp: dict) -> str:
         return ((wp.get("description") or {}).get("raw") or "").strip()
 
+    def user_name(self, href: str | None) -> str | None:
+        """Имя автора записи: в ленте у ссылки на пользователя нет title."""
+        if not href:
+            return None
+        if href not in self._users:
+            try:
+                self._users[href] = self.c.get(href.removeprefix(API))["name"]
+            except ApiError:
+                self._users[href] = None           # удалён или скрыт — не повод падать
+        return self._users[href]
+
+    def history(self, wid: int, limit: int | None = 5) -> list[dict]:
+        """Последние записи ленты, от старых к новым: кто, когда, комментарий, что изменилось."""
+        rows = []
+        for a in self.c.collection(f"/work_packages/{wid}/activities"):
+            comment = ((a.get("comment") or {}).get("raw") or "").strip()
+            changes = [d["raw"] for d in a.get("details") or [] if d.get("raw")]
+            if a.get("version") == 1:
+                changes = ["задача создана"]       # а не дюжина «поле присвоено значение»
+            if comment or changes:
+                rows.append({"at": a["createdAt"],
+                             "author": self.user_name((a["_links"].get("user") or {}).get("href")),
+                             "comment": comment, "changes": changes})
+        return rows[-limit:] if limit else rows
+
+    def last_comment(self, wid: int) -> dict | None:
+        return next((r for r in reversed(self.history(wid, None)) if r["comment"]), None)
+
+    def relations(self, wid: int) -> list[dict]:
+        """Связи с точки зрения этой задачи: «следует за #12», «блокирует #15»."""
+        out = []
+        for r in self.c.collection(f"/work_packages/{wid}/relations"):
+            src, dst = r["_links"]["from"], r["_links"]["to"]
+            forward = href_id(src["href"]) == wid
+            other = dst if forward else src
+            kind = r["type"] if forward else r.get("reverseType") or r["type"]
+            out.append({"relation": RELATIONS.get(kind, kind), "id": href_id(other["href"]),
+                        "subject": other.get("title")})
+        return out
+
+    @staticmethod
+    def children(wp: dict) -> list[dict]:
+        return [{"id": href_id(c["href"]), "subject": c.get("title")}
+                for c in wp["_links"].get("children") or []]
+
+    def context(self, today: dt.date | None = None) -> dict[str, Any]:
+        """Что агенту знать в начале сессии: спринт, мои задачи по этапам с последним
+        комментарием, что дальше по спринту и риски. Без проекта — пусто."""
+        project = self.config.project
+        if not project:
+            return {}
+        today = today or dt.date.today()
+        me = self.c.get("/users/me")["name"]
+        out: dict[str, Any] = {"project": self.c.get(f"/projects/{project}")["name"],
+                               "identifier": project, "me": me, "sprint": None,
+                               "active": [], "next": [], "risks": [],
+                               "tracker": self.config.tracker}
+        mine = self.list(mine=True)
+        by_status = {self.config.statuses[s].lower(): s for s in CONTEXT_STAGES
+                     if s in self.config.statuses}
+        for row in mine:
+            stage = by_status.get((row["status"] or "").lower())
+            if stage:
+                out["active"].append({**row, "stage": stage, "last": self.last_comment(row["id"])})
+        out["active"].sort(key=lambda r: (CONTEXT_STAGES.index(r["stage"]), r["id"]))
+        late = [r for r in mine if r["due"] and r["due"] < today.isoformat()]
+        out["risks"] = [f"#{r['id']} {r['subject']}: срок {_ddmm(r['due'])} прошёл, статус "
+                        f"«{r['status']}»" for r in late]
+        try:
+            b = self.board(today=today)
+        except LookupError:                           # спринтов в проекте нет — не беда
+            return out
+        out["sprint"] = b["sprint"]
+        # по задачам доски, а не по имени спринта: у подпроектов бывают свои «Спринт 1»
+        in_sprint = {r["id"] for col in b["columns"] for r in col["tasks"]}
+        active = {r["id"] for r in out["active"]}
+        out["next"] = sorted((r for r in mine if r["id"] in in_sprint and r["id"] not in active),
+                             key=lambda r: (r["due"] or "9999", r["id"]))
+        seen = {r["id"] for r in late}
+        out["risks"] += [f"#{r['id']} {r['subject']}: срок {_ddmm(r['due'])} прошёл, статус "
+                         f"«{r['status']}»" for r in b["overdue"] if r["id"] not in seen]
+        out["risks"] += [f"{x['assignee']}: осталось {x['remaining']:g} ч при "
+                         f"{x['capacity']:g} ч до конца спринта" for x in b["load"] if x["over"]]
+        return out
+
     def list(self, project: str | None = None, sprint: str | None = None,
              status: str | None = None, mine: bool = False, include_closed: bool = False,
-             ) -> list[dict]:
+             search: str | None = None) -> list[dict]:
         project = project or self.config.project
         filters: list[dict] = []
+        if search:
+            # тема, описание и комментарии — фильтр сервера
+            filters.append({"search": {"operator": "**", "values": [search]}})
         if status:
             filters.append({"status": {"operator": "=", "values": [str(self.status(status)["id"])]}})
         else:
@@ -419,6 +519,10 @@ def comment_warnings(text: str) -> list[str]:
     if sum(ln.lstrip().startswith(("#", "- ", "* ", "|")) for ln in lines) > 6:
         out.append("много заголовков и пунктов: обычным текстом в пару предложений понятнее")
     return out
+
+
+def _ddmm(day: str) -> str:
+    return f"{dt.date.fromisoformat(day):%d.%m}"
 
 
 def _hours(value: str | None, default: float | None = 0.0) -> float | None:

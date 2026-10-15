@@ -43,7 +43,8 @@ def instructions() -> str:
     head = ("Инструменты op_* ведут задачи OpenProject. В правилах ниже команда "
             "`opsync start|review|done|reopen` — это op_stage, `opsync X` — op_X. Проект: "
             "параметр project_dir (каталог репозитория с .openproject.yaml) или project "
-            "(identifier); не знаешь — op_projects.\n\n")
+            "(identifier); не знаешь — op_projects. В начале работы — op_context: что в "
+            "работе, что дальше, какие риски.\n\n")
     return head + "\n\n".join(parts)
 
 
@@ -116,11 +117,29 @@ def build() -> MCPServer:
         return _tasks(project_dir, project).list(project, sprint, status, mine, include_closed)
 
     @tool
-    def op_show(ref: str, project_dir: str | None = None) -> dict:
-        """Задача целиком: ref — номер (123, #123) или key плана."""
+    def op_context(project_dir: str | None = None, project: str | None = None) -> dict:
+        """С чего начать сессию: текущий спринт, мои задачи в работе / на проверке / в
+        ожидании с последним комментарием, что дальше по спринту, риски."""
+        return _tasks(project_dir, project).context()
+
+    @tool
+    def op_show(ref: str, history: int = 5, project_dir: str | None = None) -> dict:
+        """Задача целиком: ref — номер (123, #123) или key плана. history — сколько последних
+        записей ленты (комментарии и изменения) вернуть, 0 — все."""
         tasks = _tasks(project_dir)
-        wp = tasks.get(tasks.resolve(ref))
-        return {**tasks.summary(wp), "description": tasks.describe(wp)}
+        wid = tasks.resolve(ref)
+        wp = tasks.get(wid)
+        return {**tasks.summary(wp), "description": tasks.describe(wp),
+                "children": tasks.children(wp), "relations": tasks.relations(wid),
+                "history": tasks.history(wid, history or None)}
+
+    @tool
+    def op_search(text: str, include_closed: bool = False, project: str | None = None,
+                  project_dir: str | None = None) -> list[dict]:
+        """Поиск задач проекта по теме, описанию и комментариям — найти, что уже делали
+        или обсуждали."""
+        return _tasks(project_dir, project).list(project, include_closed=include_closed,
+                                                 search=text)
 
     @tool
     def op_stage(ref: str, stage: str, comment: str | None = None, spent: str | None = None,

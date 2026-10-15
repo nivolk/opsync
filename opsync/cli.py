@@ -1,7 +1,9 @@
 """opsync — задачи OpenProject из командной строки и YAML-плана.
 
 Ведение задач (из любого каталога; проект и этапы — из .openproject.yaml):
-    opsync show <ref> [--json]                задача целиком
+    opsync context [--hook] [--json]          с чего начать сессию: спринт, мои задачи, риски
+    opsync show <ref> [--history N] [--json]  задача целиком, связи, последние записи ленты
+    opsync search <текст> [--all] [--json]    поиск по теме, описанию и комментариям
     opsync list [--sprint S] [--status S] [--mine] [--all] [--project P] [--json]
     opsync board [--sprint S] [--project P] [--json]   сводка спринта: колонки, часы, риски
     opsync carry <спринт> [--to S] [--dry-run] [-m текст]  незакрытые задачи → в следующий
@@ -58,8 +60,21 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--version", action="version", version=f"opsync {__version__}")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("show", help="задача целиком")
+    p = sub.add_parser("show", help="задача целиком: описание, связи, последние записи ленты")
     p.add_argument("ref")
+    p.add_argument("--history", type=int, default=5, metavar="N",
+                   help="сколько последних записей ленты показать (0 — все)")
+    p.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("search", help="поиск задач по теме, описанию и комментариям")
+    p.add_argument("text")
+    p.add_argument("--project")
+    p.add_argument("--all", action="store_true", help="вместе с закрытыми")
+    p.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("context", help="с чего начать сессию: спринт, мои задачи, риски")
+    p.add_argument("--hook", action="store_true",
+                   help="для хука старта сессии: коротко, без ошибок и без ожидания сети")
     p.add_argument("--json", action="store_true")
 
     p = sub.add_parser("list", help="задачи проекта (по умолчанию открытые)")
@@ -163,13 +178,20 @@ def main(argv: list[str] | None = None) -> int:
             return setup.run(args.url, token, args.yes)
         if args.cmd == "init":
             return cmd_init(args, Client.from_env())
+        if args.cmd == "context" and args.hook:
+            return cmd_context_hook()
         config = find_project_config()
         client = Client.from_env()
         if args.cmd == "doctor":
             return cmd_doctor(client, config)
         tasks = Tasks(client, config)
         if args.cmd == "show":
-            return cmd_show(tasks, args.ref, args.json)
+            return cmd_show(tasks, args.ref, args.json, args.history)
+        if args.cmd == "search":
+            return print_rows(tasks.list(project=args.project, include_closed=args.all,
+                                         search=args.text), args.json)
+        if args.cmd == "context":
+            return print_context(tasks.context(), args.json)
         if args.cmd == "list":
             return cmd_list(tasks, args)
         if args.cmd == "board":
@@ -241,10 +263,14 @@ def add_notify(p: argparse.ArgumentParser) -> None:
 
 
 # ------------------------------------------------------------------ задачи
-def cmd_show(tasks: Tasks, ref: str, as_json: bool) -> int:
-    wp = tasks.get(tasks.resolve(ref))
+def cmd_show(tasks: Tasks, ref: str, as_json: bool, history: int = 5) -> int:
+    wid = tasks.resolve(ref)
+    wp = tasks.get(wid)
     row = tasks.summary(wp)
     row["description"] = tasks.describe(wp)
+    row["children"] = tasks.children(wp)
+    row["relations"] = tasks.relations(wid)
+    row["history"] = tasks.history(wid, history or None)
     if as_json:
         print(json.dumps(row, ensure_ascii=False, indent=1))
         return 0
@@ -260,15 +286,32 @@ def cmd_show(tasks: Tasks, ref: str, as_json: bool) -> int:
                  f"осталось {row['remaining']:g}" if row["remaining"] is not None else None,
                  f"списано {row['spent'] or 0:g}"]
         print(f"  {'Время:':13}" + ", ".join(p for p in parts if p) + " ч")
+    if row["children"]:
+        print(f"  {'Подзадачи:':13}" + ", ".join(f"#{c['id']} {c['subject']}"
+                                                 for c in row["children"]))
+    for r in row["relations"]:
+        print(f"  {'Связь:':13}{r['relation']} #{r['id']} {r['subject'] or ''}".rstrip())
     if row["description"]:
         print("\n" + row["description"])
+    if row["history"]:
+        print("\nЛента:")
+        for h in row["history"]:
+            print(f"  {_when(h['at'])} · {h['author'] or '—'}")
+            for c in h["changes"]:
+                print(f"    {c}")
+            for line in h["comment"].splitlines():
+                print(f"    > {line}")
     return 0
 
 
-def cmd_list(tasks: Tasks, args: argparse.Namespace) -> int:
-    rows = tasks.list(project=args.project, sprint=args.sprint, status=args.status,
-                      mine=args.mine, include_closed=args.all)
-    if args.json:
+def _when(stamp: str) -> str:
+    """ISO-время сервера (UTC) → местное «14.10 15:30»."""
+    at = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone()
+    return f"{at:%d.%m %H:%M}"
+
+
+def print_rows(rows: list[dict], as_json: bool) -> int:
+    if as_json:
         print(json.dumps(rows, ensure_ascii=False, indent=1))
         return 0
     if not rows:
@@ -280,6 +323,83 @@ def cmd_list(tasks: Tasks, args: argparse.Namespace) -> int:
         sprint = f" · {r['sprint']}" if r["sprint"] else ""
         print(f"#{r['id']:<5} {r['status']:<{width}}  {r['subject']}{key}{sprint}")
     return 0
+
+
+CONTEXT_TITLES = {"start": "В работе", "blocked": "Ждёт (блокер)", "review": "На проверке"}
+
+
+def print_context(c: dict, as_json: bool) -> int:
+    if as_json:
+        print(json.dumps(c, ensure_ascii=False, indent=1))
+        return 0
+    if not c:
+        print("Репозиторий не подключён к OpenProject (opsync init).")
+        return 0
+    head = f"OpenProject: {c['project']} ({c['identifier']}), вы — {c['me']}"
+    if c["sprint"]:
+        s = c["sprint"]
+        start, finish = (dt.date.fromisoformat(s[k]) for k in ("start", "finish"))
+        head += (f" · {s['name']} {start:%d.%m}–{finish:%d.%m}, "
+                 f"осталось рабочих дней: {s['days_left']}")
+    print(head)
+    stage = None
+    for r in c["active"]:
+        if r["stage"] != stage:
+            stage = r["stage"]
+            print(f"\n{CONTEXT_TITLES[stage]}:")
+        due = f" · до {dt.date.fromisoformat(r['due']):%d.%m}" if r["due"] else ""
+        key = f" [{r['key']}]" if r["key"] else ""
+        print(f"  #{r['id']} {r['subject']}{key}{due}")
+        if r["last"]:
+            text = " ".join(r["last"]["comment"].split())
+            text = text if len(text) <= 160 else text[:157] + "…"
+            print(f"    последнее ({_when(r['last']['at'])}, {r['last']['author'] or '—'}): {text}")
+    if not c["active"]:
+        print("\nУ вас нет задач в работе.")
+    if c["next"]:
+        print("\nДальше по спринту:")
+        for r in c["next"][:5]:
+            due = f" · до {dt.date.fromisoformat(r['due']):%d.%m}" if r["due"] else ""
+            print(f"  #{r['id']} {r['subject']}{due}")
+        if len(c["next"]) > 5:
+            print(f"  … и ещё {len(c['next']) - 5} (opsync board)")
+    if c["risks"]:
+        print("\nРиски:")
+        for r in c["risks"][:8]:
+            print(f"  ! {r}")
+        if len(c["risks"]) > 8:
+            print(f"  … и ещё {len(c['risks']) - 8}")
+    if c["tracker"]:
+        print(f"\nЛокальный трекер: {c['tracker']} — номер задачи OpenProject пишите рядом (OP #N).")
+    print("\nВедите задачи по ходу работы (скилл openproject-tasks): start при начале, "
+          "OP#N в сообщении коммита, короткий комментарий о ходе работы, review после "
+          "коммита; новую работу — opsync new с согласия пользователя.")
+    return 0
+
+
+def cmd_context_hook() -> int:
+    """Хук старта сессии: что-то пошло не так — молчим, сессия важнее сводки."""
+    import contextlib
+    import io
+    config = find_project_config()
+    if not config.project:
+        return 0
+    buf = io.StringIO()
+    try:
+        creds = load_credentials()
+        tasks = Tasks(Client(creds.url, creds.token, timeout=5), config)
+        with contextlib.redirect_stdout(buf):
+            print_context(tasks.context(), False)
+    except (Exception, SystemExit):                    # noqa: BLE001 — хук не должен мешать
+        return 0
+    print(buf.getvalue(), end="")
+    return 0
+
+
+def cmd_list(tasks: Tasks, args: argparse.Namespace) -> int:
+    rows = tasks.list(project=args.project, sprint=args.sprint, status=args.status,
+                      mine=args.mine, include_closed=args.all)
+    return print_rows(rows, args.json)
 
 
 def cmd_board(tasks: Tasks, args: argparse.Namespace) -> int:

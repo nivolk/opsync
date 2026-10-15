@@ -28,6 +28,7 @@ class FakeClient:
         self.allowed: dict[int, list[str]] = {} # id → статусы, разрешённые workflow (иначе все)
         self.forms: list[str] = []
         self.patch_error: ApiError | None = None
+        self.queries: list[tuple[str, dict]] = []   # (путь, параметры) каждого collection
 
     def web_url(self, wid: int) -> str:
         return f"{self.base}/work_packages/{wid}"
@@ -39,6 +40,7 @@ class FakeClient:
             raise ApiError("GET", path, 404, {"message": "не найдено"}) from None
 
     def collection(self, path: str, page_size: int = 200, **params: Any) -> Iterator[dict]:
+        self.queries.append((path, params))
         yield from copy.deepcopy(self.collections.get(path, []))
 
     def post(self, path: str, body: Any, params: dict | None = None) -> Any:
