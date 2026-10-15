@@ -39,8 +39,15 @@ def block(tracker: str | None = None) -> str:
 
 
 def targets(root: Path) -> list[Path]:
-    """Существующие файлы инструкций; если нет ни одного — AGENTS.md."""
+    """Куда писать блок: существующие файлы инструкций; если нет ни одного — AGENTS.md.
+
+    CLAUDE.md, который лишь отсылает к AGENTS.md (`@AGENTS.md` или ссылкой), не трогаем:
+    правило должно быть в одном месте, а Claude Code прочитает его через ссылку.
+    """
     found = [root / name for name in FILES if (root / name).is_file()]
+    agents, claude = root / "AGENTS.md", root / "CLAUDE.md"
+    if agents in found and claude in found and "AGENTS.md" in claude.read_text(encoding="utf-8"):
+        found.remove(claude)
     return found or [root / FILES[0]]
 
 

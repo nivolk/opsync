@@ -120,6 +120,21 @@ def test_rules_targets(tmp_path):
     assert rules.targets(tmp_path) == [tmp_path / "AGENTS.md"]
     (tmp_path / "CLAUDE.md").write_text("x")
     assert rules.targets(tmp_path) == [tmp_path / "CLAUDE.md"]
+    (tmp_path / "AGENTS.md").write_text("y")
+    assert rules.targets(tmp_path) == [tmp_path / "AGENTS.md", tmp_path / "CLAUDE.md"]
+
+
+def test_rules_skip_claude_md_that_points_to_agents_md(tmp_path, isolated_env, monkeypatch):
+    (tmp_path / "AGENTS.md").write_text("# Правила\n", encoding="utf-8")
+    claude = "# CLAUDE.md\n\nПравила — в AGENTS.md, сюда ничего не добавлять.\n\n@AGENTS.md\n"
+    (tmp_path / "CLAUDE.md").write_text(claude, encoding="utf-8")
+    (tmp_path / ".openproject.yaml").write_text("project: demo\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    assert main(["rules"]) == 0
+    assert (tmp_path / "CLAUDE.md").read_text(encoding="utf-8") == claude
+    assert rules.BEGIN in (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
+    assert main(["rules", "--remove"]) == 0
+    assert rules.BEGIN not in (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
 
 
 def test_init_writes_rules(fake, isolated_env, monkeypatch):

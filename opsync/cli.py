@@ -642,7 +642,7 @@ def cmd_rules(config: ProjectConfig, remove: bool = False, ask: bool = False) ->
     if not config.path:
         raise LookupError("репозиторий не подключён: opsync init")
     if remove:
-        done = [p.name for p in rules.targets(config.root) if rules.remove(p)]
+        done = [n for n in rules.FILES if rules.remove(config.root / n)]
         print(f"Блок opsync убран из: {', '.join(done)}." if done else "Блока opsync нет.")
         return 0
     paths = rules.targets(config.root)
