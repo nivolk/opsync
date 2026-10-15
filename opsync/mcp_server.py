@@ -42,7 +42,8 @@ def instructions() -> str:
         if m:
             parts.append(f"## {title}\n{m.group(1).strip()}")
     head = ("Инструменты op_* ведут задачи OpenProject. В правилах ниже команда "
-            "`opsync start|review|done|reopen` — это op_stage, `opsync X` — op_X. Проект: "
+            "`opsync start|review|done|reopen` — это op_stage, `opsync block` — op_stage со "
+            "stage=blocked, `opsync unblock` — stage=start, `opsync X` — op_X. Проект: "
             "параметр project_dir (каталог репозитория с .openproject.yaml) или project "
             "(identifier); не знаешь — op_projects. В начале работы — op_context: что в "
             "работе, что дальше, какие риски.\n\n")

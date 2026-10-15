@@ -184,6 +184,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--url", help="адрес OpenProject")
     p.add_argument("--token-stdin", action="store_true", help="токен — из stdin")
     p.add_argument("--yes", action="store_true", help="не спрашивать, подключить всё найденное")
+    p.add_argument("--no-new-hooks", dest="new_hooks", action="store_false",
+                   help="хуки Claude Code только обновить, если уже стоят (так делает upgrade)")
 
     p = sub.add_parser("hooks", help="хуки Claude Code: сводка задач при старте, подсказка "
                                      "после коммита")
@@ -239,7 +241,7 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_upgrade()
         if args.cmd == "setup":
             token = sys.stdin.readline().strip() if args.token_stdin else None
-            return setup.run(args.url, token, args.yes)
+            return setup.run(args.url, token, args.yes, new_hooks=args.new_hooks)
         if args.cmd == "hooks":
             return cmd_hooks(args.action)
         if args.cmd == "init":
@@ -675,7 +677,7 @@ def cmd_upgrade() -> int:
         raise LookupError("нужен uv: https://docs.astral.sh/uv/getting-started/installation/")
     subprocess.run([uv, "tool", "upgrade", "opsync"], check=True)
     # Скиллы — уже новой версией: свежий процесс, доступ не трогаем.
-    return subprocess.run(["opsync", "setup", "--yes"]).returncode
+    return subprocess.run(["opsync", "setup", "--yes", "--no-new-hooks"]).returncode
 
 
 def choose_project(client: Client) -> str:

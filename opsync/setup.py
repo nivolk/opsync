@@ -239,7 +239,8 @@ def ask(question: str, default: bool = True) -> bool:
 
 
 def run(url: str | None = None, token: str | None = None, yes: bool = False,
-        home: Path | None = None) -> int:
+        home: Path | None = None, new_hooks: bool = True) -> int:
+    """new_hooks=False (upgrade) — хуки только обновить, если уже стоят: ставят их с согласия."""
     home = home or Path.home()
     interactive = sys.stdin.isatty() and not yes
     print("1. Доступ к OpenProject")
@@ -290,6 +291,9 @@ def run(url: str | None = None, token: str | None = None, yes: bool = False,
         state = hooks_state(home)
         if state == "актуальны":
             print("   Хуки Claude Code: уже стоят.")
+        elif state == "нет" and not new_hooks:
+            print("   Хуки Claude Code не стоят: сводка задач в начале сессии и подсказка "
+                  "после коммита — opsync hooks on.")
         elif interactive and not ask("   Хуки Claude Code: сводка задач в начале сессии и "
                                      "подсказка после коммита. Поставить?"):
             print("   Хуки пропущены (включить позже: opsync hooks on).")

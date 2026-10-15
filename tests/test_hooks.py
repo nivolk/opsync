@@ -129,3 +129,16 @@ def test_init_writes_rules(fake, isolated_env, monkeypatch):
     text = (isolated_env / "work" / "AGENTS.md").read_text(encoding="utf-8")
     assert "opsync context" in text and "(OP #N)" in text
     assert main(["init", "--project", "demo", "--force", "--no-rules"]) == 0
+
+
+def test_setup_refreshes_but_does_not_add_hooks_on_upgrade(isolated_env, monkeypatch, capsys):
+    home = isolated_env / "home"
+    (home / ".claude").mkdir(parents=True)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    (setup.user_config_dir()).mkdir(parents=True)
+    (setup.user_config_dir() / ".env").write_text("OP_URL=x\nOP_TOKEN=y\n")
+    setup.run(home=home, new_hooks=False)
+    assert setup.hooks_state(home) == "нет"
+    assert "opsync hooks on" in capsys.readouterr().out
+    setup.run(home=home)
+    assert setup.hooks_state(home) == "актуальны"

@@ -42,15 +42,16 @@
 |---|---|---|
 | `GET /work_packages/{id}` | задача целиком | `Tasks.get` |
 | `GET /projects/{id}/work_packages?filters=…` | задачи проекта | `Tasks.list`, `apply`, `export` |
-| `POST /projects/{id}/work_packages` | создать | `apply.create` |
-| `POST /projects/{id}/work_packages/form` | проверить тело без создания (`_embedded.validationErrors`) | `apply.validate` (`--dry-run`) |
+| `POST /projects/{id}/work_packages` | создать | `apply.create`, `Tasks.new` |
+| `POST /projects/{id}/work_packages/form` | проверить тело без создания (`_embedded.validationErrors`) | `apply.validate`, `new --dry-run` |
 | `PATCH /work_packages/{id}` | изменить: только переданные поля + `lockVersion`. Поле `comment` в теле **молча игнорируется** | `set_status`, `apply.update` |
 | `POST /work_packages/{id}/form` | схема правки: допустимые значения полей | `Tasks.allowed_statuses` |
 | `POST /work_packages/{id}/activities[?notify=false]` | комментарий `{"comment": {"raw": "…"}}` (markdown) | `Tasks.comment` |
-| `GET /work_packages/{id}/activities` | лента: комментарии и изменения | — |
+| `GET /work_packages/{id}/activities` | лента от старых к новым: `comment.raw`, `details[].raw` («Статус изменено с … на …»), `createdAt`, `version` (1 — создание), `_links.user` **без `title`** — имя берём `GET /users/{id}` | `Tasks.history` |
 | `POST /time_entries` | списать время: `{"hours": "PT1H30M", "spentOn": "2026-10-08", "comment": {"raw": …}, "_links": {"entity": {"href": "/api/v3/work_packages/166"}, "activity": …}}`; `activity` необязателен (у нас по умолчанию «Управление») | `Tasks.log_time` |
 | `POST /time_entries/form` | виды работ для задачи: `_embedded.schema.activity._embedded.allowedValues` | `Tasks._activity` |
-| `GET/POST /work_packages/{id}/relations` | связи, `{"type": "follows", "_links": {"to": …}}` | `apply.ensure_relations` |
+| `GET/POST /work_packages/{id}/relations` | связи, `{"type": "follows", "_links": {"to": …}}`; читать с точки зрения задачи: если она в `to` — тип `reverseType` | `apply.ensure_relations`, `Tasks.relations` |
+| `_links.children` задачи | подзадачи (`href`, `title`) | `show` |
 
 **Смена статуса и workflow.** Допустимые переходы зависят от типа задачи и ролей
 пользователя (workflow настраивается только в интерфейсе). Недопустимый переход даёт 422.
@@ -89,10 +90,20 @@ sortBy=[["id","asc"]]
 | `status` | `o` открытые, `c` закрытые, `*` все, `=` по id | без фильтра по статусу сервер отдаёт только открытые |
 | `assignee` | `=` с `me` или id | |
 | `project` | `=` по id | для `/work_packages` без проекта |
-| `sprint` | `=` по id спринта | есть на 17.8 (модуль Backlogs); сейчас `list --sprint` фильтрует на клиенте по имени |
+| `sprint` | `=` по id спринта | есть на 17.8 (модуль Backlogs) |
+| `search` | `**` со строкой | тема, описание **и комментарии** (`opsync search`) |
+| `updatedAt` | `>t-` с числом дней; `<>d` — интервал дат, конец не включается | «сделано за неделю» в `report` |
 | `parent`, `type`, `category`, `targetVersion`, `subject` (`~`) | | |
 
 Полный список фильтров экземпляра: `GET /api/v3/queries/filter_instance_schemas` (у нас 48).
+
+## Состояние проекта и новости
+
+| Запрос | Зачем |
+|---|---|
+| `PATCH /projects/{id}` | `{"statusExplanation": {"format": "markdown", "raw": …}, "_links": {"status": {"href": "/api/v3/project_statuses/at_risk"}}}` — статус и пояснение на странице обзора проекта; нужно право «Изменить проект». В пояснении `#123` становится ссылкой на задачу |
+| `GET /project_statuses/{id}` | `on_track`, `at_risk`, `off_track`, `not_started`, `finished`, `discontinued`; в русском интерфейсе `off_track` подписан «Приостановлен» — поэтому `report` сам его не ставит |
+| `POST /news` | `{"title", "summary", "description": {"raw"}, "_links": {"project"}}` — новость; нужен модуль «Новости» в проекте и право «Управлять новостями» |
 
 ## Справочники
 
