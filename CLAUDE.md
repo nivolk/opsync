@@ -9,4 +9,6 @@ README.md; устройство и решения — docs/DESIGN.md; запро
   (не переименовывать без правки opsync/mcp_server.py).
 - Запись в OpenProject при проверках — только в проекте-песочнице.
 - Коммиты: conventional commits на русском; сообщения CLI и комментарии в коде — на русском.
+- Новая версия: `pyproject.toml`, `opsync/__init__.py`, CHANGELOG.md, затем тег `vX.Y.Z`
+  на коммите с версией и push вместе с тегом (`git push origin main vX.Y.Z`).
 - Новая зависимость → у тех, кто ставил editable: `uv tool install -e . --reinstall`.
