@@ -1,6 +1,6 @@
 [project]
 name = "opsync"
-version = "0.3.1"
+version = "0.3.2"
 description = "Агенты ведут задачи в OpenProject: спринт, статусы, комментарии, время, план"
 requires-python = ">=3.11"
 dependencies = [
